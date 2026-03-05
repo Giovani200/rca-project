@@ -11,7 +11,19 @@
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",
-    "test": "react-scripts test"
+    "test": "react-scripts test",
+    "lint": "eslint src/"
+  },
+  "jest": {
+    "collectCoverageFrom": ["src/**/*.{js,jsx}"],
+    "coverageThreshold": {
+      "global": {
+        "branches": 0,
+        "functions": 0,
+        "lines": 0,
+        "statements": 0
+      }
+    }
   },
   "browserslist": {
     "production": [

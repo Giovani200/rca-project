@@ -12,9 +12,32 @@ app = Flask(__name__)
 CORS(app)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgres://taskuser:taskpass@db:5432/taskdb")
-REDIS_URL = os.environ["REDIS_URL"]
+REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 
 search_history = []
+_tasks_table_ensured = False
+
+def ensure_tasks_table() -> None:
+    global _tasks_table_ensured
+    if _tasks_table_ensured:
+        return
+    conn = psycopg2.connect(DATABASE_URL)
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id SERIAL PRIMARY KEY,
+                    title VARCHAR(255) NOT NULL,
+                    description TEXT DEFAULT '',
+                    is_active BOOLEAN DEFAULT true,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+    finally:
+        conn.close()
+    _tasks_table_ensured = True
 
 def get_db() -> psycopg2.extensions.connection:
     """Retourne la connexion PostgreSQL pour la requête en cours."""
@@ -38,10 +61,11 @@ def close_db(exception: BaseException | None) -> None:
 
 @app.before_request
 def log_request():
+    ensure_tasks_table()
     try:
         g.start_time = datetime.now()
         app.logger.info(f"{request.method} {request.path}")
-    except:
+    except Exception:
         pass
 
 @app.after_request
@@ -49,7 +73,7 @@ def after_request(response):
     try:
         duration = datetime.now() - g.start_time
         app.logger.info(f"{request.method} {request.path} -> {response.status_code} ({duration.total_seconds():.3f}s)")
-    except:
+    except Exception:
         pass
     return response
 
