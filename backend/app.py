@@ -3,30 +3,35 @@ import os
 from datetime import datetime, timezone
 
 from flask import Flask, jsonify, request, g
+from flask_cors import CORS
 import psycopg2
 import psycopg2.extras
 import redis
 
 app = Flask(__name__)
+CORS(app)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgres://taskuser:taskpass@db:5432/taskdb")
 REDIS_URL = os.environ["REDIS_URL"]
 
 search_history = []
 
-def get_db():
+def get_db() -> psycopg2.extensions.connection:
+    """Retourne la connexion PostgreSQL pour la requête en cours."""
     if "db" not in g:
         g.db = psycopg2.connect(DATABASE_URL)
         g.db.autocommit = True
     return g.db
 
-def get_redis():
+def get_redis() -> redis.Redis:  # type: ignore[type-arg]
+    """Retourne le client Redis pour la requête en cours."""
     if "redis" not in g:
         g.redis = redis.from_url(REDIS_URL)
     return g.redis
 
 @app.teardown_appcontext
-def close_db(exception):
+def close_db(exception: BaseException | None) -> None:
+    """Ferme la connexion PostgreSQL à la fin du contexte applicatif."""
     db = g.pop("db", None)
     if db is not None:
         db.close()
@@ -49,11 +54,13 @@ def after_request(response):
     return response
 
 @app.route("/health")
-def health():
+def health() -> tuple:
+    """Endpoint de vérification de santé de l'application."""
     return jsonify({"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()})
 
 @app.route("/api/tasks", methods=["GET"])
-def list_tasks():
+def list_tasks() -> tuple:
+    """Liste toutes les tâches avec filtrage optionnel par statut ou date."""
     db = get_db()
     cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     status = request.args.get("status")
@@ -82,7 +89,8 @@ def list_tasks():
     return jsonify(result)
 
 @app.route("/api/tasks", methods=["POST"])
-def create_task():
+def create_task() -> tuple:
+    """Crée une nouvelle tâche à partir des données JSON fournies."""
     data = request.get_json()
     if not data or not data.get("title"):
         return jsonify({"error": "Title is required"}), 400
@@ -127,7 +135,8 @@ def update_task(task_id):
     })
 
 @app.route("/api/tasks/<int:task_id>", methods=["DELETE"])
-def delete_task(task_id):
+def delete_task(task_id: int) -> tuple:
+    """Supprime une tâche par son identifiant."""
     db = get_db()
     cur = db.cursor()
     cur.execute("DELETE FROM tasks WHERE id = %s", (task_id,))
@@ -166,27 +175,6 @@ def get_stats():
     import json
     r.setex("stats", 1, json.dumps(dict(stats)))
     return jsonify(dict(stats))
-
-def warmup_cache():
-    """Préchauffage du cache Redis au démarrage (exécuté dans un thread séparé)."""
-    import threading
-    import time
-
-    def _warmup():
-        # Attendre que le serveur soit prêt avant de l'appeler
-        time.sleep(5)
-        try:
-            r = redis.from_url(REDIS_URL)
-            r.ping()
-            import urllib.request
-            urllib.request.urlopen("http://localhost:8000/api/stats", timeout=5)
-        except Exception as e:
-            print(f"Cache warmup failed (non-critical): {e}")
-
-    thread = threading.Thread(target=_warmup, daemon=True)
-    thread.start()
-
-warmup_cache()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000, debug=True)
