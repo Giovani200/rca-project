@@ -42,8 +42,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    volumes:
-      - ./backend:/app
 
   frontend:
     build: ./frontend
@@ -57,8 +55,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    volumes:
-      - ./frontend:/app
 
 volumes:
   postgres_data:
