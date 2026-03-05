@@ -1,5 +1,7 @@
 from model import Task  # noqa
+import json
 import os
+from collections import deque
 from datetime import datetime, timezone
 
 from flask import Flask, jsonify, request, g
@@ -80,7 +82,26 @@ def after_request(response):
 @app.route("/health")
 def health() -> tuple:
     """Endpoint de vérification de santé de l'application."""
-    return jsonify({"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()})
+    result = {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
+    # Vérifier la connexion à la base de données
+    try:
+        db = get_db()
+        cur = db.cursor()
+        cur.execute("SELECT 1")
+        cur.close()
+        result["database"] = "ok"
+    except Exception:
+        result["database"] = "error"
+        result["status"] = "degraded"
+    # Vérifier la connexion Redis
+    try:
+        r = get_redis()
+        r.ping()
+        result["redis"] = "ok"
+    except Exception:
+        result["redis"] = "error"
+        result["status"] = "degraded"
+    return jsonify(result)
 
 @app.route("/api/tasks", methods=["GET"])
 def list_tasks() -> tuple:
@@ -89,14 +110,15 @@ def list_tasks() -> tuple:
     cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     status = request.args.get("status")
     today_only = request.args.get("today")
+    filter_param = request.args.get("filter")
     query = "SELECT * FROM tasks"
     conditions = []
     params = []
     if status:
         conditions.append("is_active = true" if status == "active" else "is_active = false")
-    if today_only:
+    if today_only or filter_param == "today":
         conditions.append("DATE(created_at) = DATE(%s)")
-        params.append(datetime.now())
+        params.append(datetime.now(timezone.utc))
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY created_at DESC"
@@ -120,6 +142,15 @@ def create_task() -> tuple:
         return jsonify({"error": "Title is required"}), 400
     db = get_db()
     cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    # Vérifier si une tâche avec le même titre existe déjà
+    cur.execute("SELECT * FROM tasks WHERE title = %s", (data["title"],))
+    existing = cur.fetchone()
+    if existing:
+        return jsonify({
+            "id": existing["id"], "title": existing["title"], "description": existing["description"],
+            "is_active": existing["is_active"], "created_at": existing["created_at"].isoformat(),
+            "updated_at": existing["updated_at"].isoformat(),
+        }), 200
     cur.execute(
         "INSERT INTO tasks (title, description, is_active, created_at, updated_at) VALUES (%s, %s, %s, %s, %s) RETURNING *",
         (data["title"], data.get("description", ""), True, datetime.now(timezone.utc), datetime.now(timezone.utc))
@@ -186,18 +217,17 @@ def search_tasks():
     return jsonify(serialized)
 
 @app.route("/api/stats", methods=["GET"])
-def get_stats():
+def get_stats() -> tuple:
+    """Retourne les statistiques globales des tâches avec cache Redis."""
     r = get_redis()
     cached = r.get("stats")
     if cached:
-        import json
         return jsonify(json.loads(cached))
     db = get_db()
     cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute("SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE is_active = true) as active, COUNT(*) FILTER (WHERE is_active = false) as done FROM tasks")
     stats = cur.fetchone()
-    import json
-    r.setex("stats", 1, json.dumps(dict(stats)))
+    r.setex("stats", 300, json.dumps(dict(stats)))
     return jsonify(dict(stats))
 
 if __name__ == "__main__":
